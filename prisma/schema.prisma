@@ -1,0 +1,271 @@
+// ResolvePay data model.
+// All money is stored as integer cents (Int). Currency is USD-only in the MVP.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PaymentMode {
+  FIXTURE // simulated payments, never real PayPal
+  SANDBOX // real PayPal sandbox REST API
+}
+
+enum CaseStatus {
+  NEW
+  ANALYSIS_FAILED
+  AWAITING_REVIEW
+  ESCALATED
+  APPROVED
+  EXECUTING
+  REFUND_PENDING
+  NEEDS_RECONCILIATION
+  REFUNDED
+  REFUND_FAILED
+  DECLINED
+}
+
+enum ProposalAction {
+  REFUND
+  DECLINE
+  ESCALATE
+}
+
+enum ProposalSource {
+  AI
+  MERCHANT
+}
+
+enum RefundOpState {
+  CREATED // durable record written, request not yet sent
+  SUBMITTED // request sent, outcome not yet known
+  PAYPAL_PENDING // PayPal says PENDING
+  UNKNOWN // ambiguous outcome (timeout, network error, 5xx)
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Merchant {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  createdAt DateTime @default(now())
+  policies  Policy[]
+  orders    Order[]
+  cases     Case[]
+}
+
+model Policy {
+  id         String   @id @default(cuid())
+  merchantId String
+  key        String
+  title      String
+  text       String
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  @@unique([merchantId, key])
+}
+
+model Order {
+  id            String       @id @default(cuid())
+  merchantId    String
+  orderNumber   String       @unique
+  customerName  String
+  customerEmail String
+  currency      String       @default("USD")
+  shippingCents Int
+  totalCents    Int
+  placedAt      DateTime
+  deliveredAt   DateTime?
+  merchant      Merchant     @relation(fields: [merchantId], references: [id])
+  lineItems     LineItem[]
+  payment       PaymentLink?
+  cases         Case[]
+  checkouts     SandboxCheckout[]
+}
+
+model LineItem {
+  id        String @id @default(cuid())
+  orderId   String
+  sku       String
+  name      String
+  unitCents Int
+  quantity  Int
+  order     Order  @relation(fields: [orderId], references: [id])
+}
+
+// Association between a local order and a PayPal capture, verified server-side.
+model PaymentLink {
+  id                 String      @id @default(cuid())
+  orderId            String      @unique
+  captureId          String      @unique
+  mode               PaymentMode
+  currency           String
+  capturedCents      Int
+  captureStatus      String
+  verifiedAt         DateTime
+  raw                Json
+  createdAt          DateTime    @default(now())
+  order              Order       @relation(fields: [orderId], references: [id])
+}
+
+// A real sandbox checkout started from the Demo Setup screen.
+model SandboxCheckout {
+  id            String   @id @default(cuid())
+  orderId       String
+  paypalOrderId String   @unique
+  status        String
+  captureId     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  order         Order    @relation(fields: [orderId], references: [id])
+}
+
+model Case {
+  id         String            @id @default(cuid())
+  merchantId String
+  orderId    String
+  label      String?
+  complaint  String
+  status     CaseStatus        @default(NEW)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  merchant   Merchant          @relation(fields: [merchantId], references: [id])
+  order      Order             @relation(fields: [orderId], references: [id])
+  analyses   Analysis[]
+  proposals  Proposal[]
+  approvals  Approval[]
+  refundOps  RefundOperation[]
+  audit      AuditEvent[]
+}
+
+model Analysis {
+  id        String     @id @default(cuid())
+  caseId    String
+  source    String // "anthropic:<model>" or "fixture"
+  raw       Json?
+  parsed    Json?
+  valid     Boolean
+  errors    Json
+  createdAt DateTime   @default(now())
+  case      Case       @relation(fields: [caseId], references: [id])
+  proposals Proposal[]
+}
+
+model Proposal {
+  id           String         @id @default(cuid())
+  caseId       String
+  version      Int
+  analysisId   String?
+  source       ProposalSource
+  action       ProposalAction
+  items        Json // [{ lineItemId, quantity }]
+  amountCents  Int
+  currency     String
+  captureId    String?
+  reasons      Json // escalation / decision reasons computed by app code
+  fingerprint  String
+  supersededAt DateTime?
+  createdAt    DateTime       @default(now())
+  case         Case           @relation(fields: [caseId], references: [id])
+  analysis     Analysis?      @relation(fields: [analysisId], references: [id])
+  approvals    Approval[]
+
+  @@unique([caseId, version])
+}
+
+model Approval {
+  id              String           @id @default(cuid())
+  caseId          String
+  proposalId      String
+  proposalVersion Int
+  captureId       String
+  currency        String
+  amountCents     Int
+  fingerprint     String
+  approvedBy      String
+  createdAt       DateTime         @default(now())
+  invalidatedAt   DateTime?
+  invalidReason   String?
+  case            Case             @relation(fields: [caseId], references: [id])
+  proposal        Proposal         @relation(fields: [proposalId], references: [id])
+  refundOp        RefundOperation?
+}
+
+model RefundOperation {
+  id              String        @id @default(cuid())
+  caseId          String
+  approvalId      String        @unique
+  mode            PaymentMode
+  captureId       String
+  amountCents     Int
+  currency        String
+  paypalRequestId String        @unique
+  invoiceId       String        @unique
+  // Equals caseId while the operation is non-terminal; NULL once terminal.
+  // The unique index makes overlapping refunds for one case impossible.
+  activeLock      String?       @unique
+  state           RefundOpState @default(CREATED)
+  paypalRefundId  String?       @unique
+  paypalStatus    String?
+  lastError       String?
+  attempts        Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  case            Case          @relation(fields: [caseId], references: [id])
+  approval        Approval      @relation(fields: [approvalId], references: [id])
+}
+
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  paypalEventId String    @unique
+  eventType     String
+  verified      Boolean
+  source        String // "paypal" (signature-verified) or "fixture-simulator"
+  resourceId    String?
+  payload       Json
+  outcome       String?
+  receivedAt    DateTime  @default(now())
+  processedAt   DateTime?
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  caseId    String?
+  type      String
+  actor     String // "merchant", "ai", "system", "paypal-webhook"
+  data      Json
+  createdAt DateTime @default(now())
+  case      Case?    @relation(fields: [caseId], references: [id])
+
+  @@index([caseId, createdAt])
+}
+
+// ---- Fixture-mode ledger. Used ONLY when PAYMENTS_MODE=fixture. ----
+// These rows are simulated and are never presented as real PayPal payments.
+
+model FixtureCapture {
+  id          String          @id // always prefixed "FIXTURE-CAP-"
+  amountCents Int
+  currency    String
+  status      String
+  createdAt   DateTime        @default(now())
+  refunds     FixtureRefund[]
+}
+
+model FixtureRefund {
+  id          String         @id // always prefixed "FIXTURE-REF-"
+  captureId   String
+  requestId   String         @unique
+  amountCents Int
+  currency    String
+  invoiceId   String
+  status      String
+  createdAt   DateTime       @default(now())
+  capture     FixtureCapture @relation(fields: [captureId], references: [id])
+}

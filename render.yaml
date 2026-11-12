@@ -1,0 +1,49 @@
+# One-click Render Blueprint: a Node web service plus a managed Postgres database.
+# After the first deploy: open the app, sign in, go to Demo setup, click "Reset demo data" to seed.
+databases:
+  - name: resolvepay-db
+    plan: free
+    databaseName: resolvepay
+    user: resolvepay
+
+services:
+  - type: web
+    name: resolvepay
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npx prisma migrate deploy && npm run start
+    healthCheckPath: /login
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: resolvepay-db
+          property: connectionString
+      - key: PAYMENTS_MODE
+        value: sandbox
+      - key: AI_MODE
+        value: live
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: AI_PROVIDER
+        value: gemini          # or "anthropic"
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5-5
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MERCHANT_PASSWORD
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
