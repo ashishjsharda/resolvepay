@@ -48,5 +48,5 @@ export async function resetAndSeed(db: PrismaClient, now = new Date()) {
       await tx.case.create({ data: { ...c, merchantId: DEMO_MERCHANT.id } });
       await tx.auditEvent.create({ data: { caseId: c.id, type: "case.received", actor: "system", data: { channel: "seeded demo complaint" } } });
     }
-  });
+  }, { timeout: 30_000, maxWait: 10_000 });
 }

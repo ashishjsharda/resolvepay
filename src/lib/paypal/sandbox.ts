@@ -55,7 +55,15 @@ export class PayPalSandboxAdapter implements PaymentsAdapter {
       headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
       body: "grant_type=client_credentials",
     });
-    if (!res.ok) throw new PaymentsError(`PayPal token request failed (${res.status})`, res.status >= 500 ? "AMBIGUOUS" : "DEFINITE", res.status);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const reason = /"error_description"\s*:\s*"([^"]+)"/.exec(body)?.[1] ?? "";
+      throw new PaymentsError(
+        `PayPal sign-in with client credentials failed (${res.status}${reason ? `: ${reason}` : ""})`,
+        res.status >= 500 ? "AMBIGUOUS" : "DEFINITE",
+        res.status,
+      );
+    }
     const parsed = TokenSchema.parse(await res.json());
     this.token = { value: parsed.access_token, expiresAt: Date.now() + parsed.expires_in * 1000 };
     return parsed.access_token;

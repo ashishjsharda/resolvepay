@@ -9,6 +9,7 @@ import { ServiceError } from "./services/cases";
 import { ProposalError } from "./proposal";
 import { MoneyError } from "./money";
 import { TransitionError } from "./stateMachine";
+import { PaymentsError } from "./paypal/types";
 
 export async function getSession(): Promise<SessionPayload | null> {
   const jar = await cookies();
@@ -58,8 +59,14 @@ export function merchantAction(
       if (e instanceof ServiceError || e instanceof ProposalError || e instanceof MoneyError || e instanceof TransitionError) {
         return back(req, target, { err: e.message });
       }
+      if (e instanceof PaymentsError) {
+        console.error("[resolvepay] PayPal error", e.message, e.debugId ?? "", JSON.stringify(e.details ?? null).slice(0, 2000));
+        const hint = e.httpStatus === 401 ? " Check that PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are from a Sandbox app." : "";
+        return back(req, target, { err: `PayPal error: ${e.message}${e.debugId ? ` (debug id ${e.debugId})` : ""}.${hint}` });
+      }
       console.error("[resolvepay] action failed", e);
-      return back(req, target, { err: "Unexpected error. Nothing was marked as refunded; check the audit timeline." });
+      const detail = e instanceof Error ? e.message.split("\n")[0].slice(0, 200) : "";
+      return back(req, target, { err: `Unexpected error${detail ? `: ${detail}` : ""}. No money was moved by this action.` });
     }
   };
 }
